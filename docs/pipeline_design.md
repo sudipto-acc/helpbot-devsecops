@@ -22,7 +22,7 @@ lists which gate flagged which file and line.
 |---|---|---|---|
 | 1 | Bandit 1.9.4 | `bandit -r .` | any **High** severity finding |
 | 2 | Safety 3.8.1 | `safety check -r requirements.txt` | any dependency CVE rated **Critical** or **High** |
-| 3 | Gitleaks 8.30.1 (SHA-256 verified) | `gitleaks git --log-opts=<before>..<after>` | any API key / password / token rule matches in the pushed commit diff |
+| 3 | Gitleaks 8.30.1 (pinned SHA-256) | `gitleaks git --log-opts=<before>..<after>` | any API key / password / token rule matches in the pushed commit diff |
 | 4 | [`inject_scanner.py`](../inject_scanner.py) | `python inject_scanner.py` | any hardcoded system prompt or prompt-injection phrase in a `.py` file (exit code 1) |
 
 ## 2. What each gate checks
@@ -51,7 +51,9 @@ only. A CVE whose severity can't be resolved (for example, an API outage), or a 
 
 ### Gate 3 — Gitleaks secret detection
 Gitleaks scans the **patch of every commit in the push** (`github.event.before..github.sha`, or the
-full reachable history on a repository's first push). It applies its 150+ built-in rules: provider
+full reachable history on a repository's first push). The Gitleaks binary is downloaded from the
+official release and checked against a SHA-256 pinned in the workflow, so a tampered download fails the
+gate. It applies its 150+ built-in rules: provider
 API keys (OpenAI, AWS, GitHub, Slack, Stripe…), private keys, JWTs, passwords in connection strings,
 and a generic high-entropy `*key*/*token*/*secret*/*password* = "…"` rule. Secrets are redacted in the
 log (`--redact`), and each hit is annotated with its rule, file, line and commit. Only the pushed diff is
@@ -87,6 +89,12 @@ Repository: <https://github.com/sudipto-acc/helpbot-devsecops>
 | `defd17d` Add DevSecOps security pipeline… | adds `security.yml` + `inject_scanner.py` | ✅ all 4 gates green — [run #1](https://github.com/sudipto-acc/helpbot-devsecops/actions/runs/42457265852) |
 | `73d0d57` Deliberate fail commit… | plants all 4 problems at once | ❌ all 4 gates red — [run #2](https://github.com/sudipto-acc/helpbot-devsecops/actions/runs/42457462412) |
 | `480f21f` Fix all 4 gate findings… | fixes all 4 problems | ✅ all 4 gates green — [run #3](https://github.com/sudipto-acc/helpbot-devsecops/actions/runs/42457643438) |
+
+> **Operational note (runs #4 and #5).** After the docs commit, Gate 3 failed twice with no finding: the
+> GitHub release CDN returned HTTP 504 when downloading Gitleaks (and its checksum file). The gate
+> **failed closed**, so an unavailable scanner never counts as a pass. The fix keeps that behaviour and
+> removes the fragile dependency: the workflow now downloads only the tarball, with retries, and checks it
+> against a SHA-256 pinned in `security.yml` instead of a checksum file fetched from the same server.
 
 | # | Planted problem | Location | Caught by | Evidence in the Actions log |
 |---|---|---|---|---|
