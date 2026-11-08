@@ -172,6 +172,20 @@ colour; the callouts name the specific issue that gate caught.
 
 ![Fix run all green](screenshots/06-fix-run-all-green.png)
 
+### Submission screenshot set
+Files in [`screenshots/submission/`](screenshots/submission/):
+
+| # | Screenshot | File |
+|---|---|---|
+| 1 | Repository page with `.github/workflows/` in the file tree | [01-repo-file-tree.png](screenshots/submission/01-repo-file-tree.png) |
+| 2 | `security.yml` open in the GitHub editor, the 4 gate jobs marked | [02-security-yml-github-editor.png](screenshots/submission/02-security-yml-github-editor.png) |
+| 3 | `inject_scanner.py` open in the GitHub editor: `SYSTEM_PROMPT_PATTERNS` and `INJECTION_PHRASES` lists | [03-inject-scanner-lists.png](screenshots/submission/03-inject-scanner-lists.png) |
+| 4 | Failing pipeline run #2: all 4 gate jobs with a red X | [04-failing-pipeline-run.png](screenshots/submission/04-failing-pipeline-run.png) |
+| 5 | Bandit gate log expanded: `Location: ./app.py:40:11`, `return eval(expression)` | [05-bandit-failure-log.png](screenshots/submission/05-bandit-failure-log.png) |
+| 6 | Gitleaks gate log expanded: `RuleID: generic-api-key`, `File: config.py`, `Line: 4` | [06-gitleaks-failure-log.png](screenshots/submission/06-gitleaks-failure-log.png) |
+| 7 | Passing pipeline run #3: all 4 gate jobs with green checkmarks | [07-passing-pipeline-run.png](screenshots/submission/07-passing-pipeline-run.png) |
+| 8 | Fail commit diff (`73d0d57`), then fix commit diff (`480f21f`), side-by-side view | [08a-fail-commit-diff.png](screenshots/submission/08a-fail-commit-diff.png), [08b-fix-commit-diff.png](screenshots/submission/08b-fix-commit-diff.png) |
+
 ## 4. Why detecting these issues at commit time keeps them out of production
 Each of these four problems is cheapest to fix minutes after it is written and most expensive once it
 is running. Running the gates on every push turns each commit into a checkpoint. The workflow result is
