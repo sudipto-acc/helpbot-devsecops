@@ -1,2 +1,3 @@
-flask
-requests
+# PLANTED ISSUE 2 (Gate 2 - Safety): Flask 0.12.2 has known High-severity CVEs
+flask==0.12.2
+requests==2.34.2
