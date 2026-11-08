@@ -193,8 +193,8 @@ jobs:
           cd "$RUNNER_TEMP"
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
           tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfLO "${base}/${tarball}"
-          curl -sSfLO "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          curl -sSfLO --retry 5 --retry-all-errors --retry-delay 5 "${base}/${tarball}"
+          curl -sSfLO --retry 5 --retry-all-errors --retry-delay 5 "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           tar -xzf "${tarball}" gitleaks
           sudo install gitleaks /usr/local/bin/gitleaks
