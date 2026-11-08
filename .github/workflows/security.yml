@@ -1,0 +1,239 @@
+name: Security Gates
+
+# Four sequential security gates on every push. Gates 2-4 also run when an earlier gate failed
+# (`!cancelled()`), so one run reports every problem in the commit; any failed gate fails the run.
+on: push
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  gate-1-bandit:
+    name: Gate 1 - Bandit SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Bandit
+        run: pip install bandit==1.9.4
+      - name: bandit -r .
+        run: |
+          bandit -r . --exit-zero
+          bandit -r . --exit-zero --quiet --format json --output bandit-report.json
+      - name: Fail on any High severity finding
+        shell: python
+        run: |
+          import json
+          import sys
+
+          # AI-specific policy: in an LLM app eval()/exec() receive model- or user-controlled text,
+          # which is remote code execution, so Bandit's MEDIUM rating is escalated to HIGH here.
+          ESCALATE = {"B307": "eval()", "B102": "exec()"}
+
+          with open("bandit-report.json", encoding="utf-8") as fh:
+              results = json.load(fh)["results"]
+
+          blocking = 0
+          for r in results:
+              severity, note = r["issue_severity"], ""
+              if r["test_id"] in ESCALATE and severity != "HIGH":
+                  severity = "HIGH"
+                  note = f" [AI policy: {ESCALATE[r['test_id']]} escalated {r['issue_severity']} -> HIGH]"
+              if severity != "HIGH":
+                  continue
+              blocking += 1
+              path = r["filename"].removeprefix("./")
+              print(f"::error file={path},line={r['line_number']},title=Gate 1 Bandit {r['test_id']}::"
+                    f"{r['test_name']}: {r['issue_text']}{note}")
+
+          if blocking:
+              print(f"Gate 1 FAILED: {blocking} High severity finding(s) - see the Bandit report above.")
+              sys.exit(1)
+          print(f"Gate 1 PASSED: no High severity findings ({len(results)} lower-severity finding(s), non-blocking).")
+
+  gate-2-safety:
+    name: Gate 2 - Safety dependency scan
+    needs: gate-1-bandit
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Safety
+        run: pip install safety==3.8.1
+      - name: safety check -r requirements.txt
+        run: safety check -r requirements.txt --save-json safety-report.json --continue-on-error
+      - name: Fail on any Critical or High CVE
+        if: ${{ !cancelled() }}
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          # UNKNOWN = a CVE whose severity could not be resolved -> fail closed
+          BLOCKING = {"CRITICAL", "HIGH", "UNKNOWN"}
+
+
+          def get_json(url, headers=None):
+              req = urllib.request.Request(url, headers={"User-Agent": "security-gate", **(headers or {})})
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.load(resp)
+
+
+          def from_safety(vuln):
+              for key in ("cvssv3", "cvssv2"):
+                  cvss = (vuln.get("severity") or {}).get(key) or {}
+                  if cvss.get("base_score") is not None:
+                      score = float(cvss["base_score"])
+                      label = cvss.get("base_severity") or (
+                          "CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW")
+                      return label.upper(), score, f"Safety DB {key}"
+              return None
+
+
+          def from_github(cve):
+              headers = {"Accept": "application/vnd.github+json"}
+              if os.environ.get("GH_TOKEN"):
+                  headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
+              for adv in get_json(f"https://api.github.com/advisories?cve_id={cve}", headers):
+                  label = (adv.get("severity") or "").upper().replace("MODERATE", "MEDIUM")
+                  if label in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                      score = ((adv.get("cvss_severities") or {}).get("cvss_v3") or {}).get("score")
+                      return label, score, f"GitHub Advisory {adv.get('ghsa_id')}"
+              return None
+
+
+          def from_nvd(cve):
+              data = get_json(f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}")
+              for item in data.get("vulnerabilities", []):
+                  metrics = item.get("cve", {}).get("metrics", {})
+                  for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                      for metric in metrics.get(key, []):
+                          label = metric.get("cvssData", {}).get("baseSeverity") or metric.get("baseSeverity")
+                          if label:
+                              return label.upper(), metric["cvssData"].get("baseScore"), f"NVD {key}"
+              return None
+
+
+          def requirement_line(package):
+              with open("requirements.txt", encoding="utf-8") as fh:
+                  for number, line in enumerate(fh, 1):
+                      if re.match(rf"\s*{re.escape(package)}\s*([=<>!~;\[]|$)", line, re.IGNORECASE):
+                          return number
+              return 1
+
+
+          try:
+              with open("safety-report.json", encoding="utf-8") as fh:
+                  vulns = json.load(fh).get("vulnerabilities", [])
+          except (OSError, ValueError) as exc:
+              print(f"::error file=requirements.txt,title=Gate 2 Safety::No readable Safety report ({exc}) - failing closed.")
+              sys.exit(1)
+
+          blocking = 0
+          for vuln in vulns:
+              package, version = vuln.get("package_name", "?"), vuln.get("analyzed_version") or "unpinned"
+              cve = vuln.get("CVE")
+              cve = cve.get("name") if isinstance(cve, dict) else cve
+              result = from_safety(vuln)
+              for lookup in (from_github, from_nvd):
+                  if result or not cve:
+                      break
+                  try:
+                      result = lookup(cve)
+                  except Exception as exc:  # API/network error: try the next severity source
+                      print(f"  {lookup.__name__}({cve}) failed: {exc}")
+              if result:
+                  severity, score, source = result
+              elif cve:
+                  severity, score, source = "UNKNOWN", None, "severity lookup failed"
+              else:
+                  severity, score, source = "N/A", None, "Safety advisory without a CVE id"
+
+              ident = cve or f"Safety-{vuln.get('vulnerability_id')}"
+              spec = vuln.get("vulnerable_spec")
+              spec = ", ".join(spec) if isinstance(spec, list) else str(spec or "")
+              score_text = f" (CVSS {score})" if score else ""
+              message = (f"{package}=={version} {ident} severity {severity}{score_text} via {source}; "
+                         f"vulnerable {spec}; {vuln.get('more_info_url', '')}")
+              level = "error" if severity in BLOCKING else "warning"
+              blocking += level == "error"
+              print(f"::{level} file=requirements.txt,line={requirement_line(package)},title=Gate 2 Safety {ident}::{message}")
+
+          if blocking:
+              print(f"Gate 2 FAILED: {blocking} Critical/High CVE(s) in requirements.txt - upgrade the affected package(s).")
+              sys.exit(1)
+          print(f"Gate 2 PASSED: no Critical or High CVEs ({len(vulns)} lower-severity finding(s), non-blocking).")
+
+  gate-3-gitleaks:
+    name: Gate 3 - Gitleaks secret detection
+    needs: gate-2-safety
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Gitleaks (checksum verified)
+        run: |
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "${base}/${tarball}"
+          curl -sSfLO "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "${tarball}" gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan the pushed commit diff for secrets
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="$AFTER"
+            echo "First push / rewritten history - scanning every commit reachable from ${AFTER:0:7}"
+          else
+            range="${BEFORE}..${AFTER}"
+            echo "Scanning pushed commits ${BEFORE:0:7}..${AFTER:0:7}"
+          fi
+          set +e
+          gitleaks git --log-opts="$range" --redact --verbose \
+            --report-format json --report-path gitleaks-report.json .
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=Gate 3 Gitleaks \(.RuleID)::\(.Description) Found in commit \(.Commit[0:7])."' gitleaks-report.json || true
+            echo "Gate 3 FAILED: secret pattern(s) found in the pushed commits. Remove and rotate the secret, then load it with os.environ.get()."
+          else
+            echo "Gate 3 PASSED: no API keys, passwords or tokens in the pushed commit diff."
+          fi
+          exit "$rc"
+
+  gate-4-prompt-injection:
+    name: Gate 4 - Prompt injection scanner
+    needs: gate-3-gitleaks
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: python inject_scanner.py
+        run: python inject_scanner.py
