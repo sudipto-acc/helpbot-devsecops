@@ -1,3 +1,3 @@
-# PLANTED ISSUE 2 (Gate 2 - Safety): Flask 0.12.2 has known High-severity CVEs
-flask==0.12.2
+# FIX 2: Flask upgraded to a release with no known CVEs
+flask==3.1.3
 requests==2.34.2
