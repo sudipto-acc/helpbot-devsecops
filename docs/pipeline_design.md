@@ -64,10 +64,10 @@ history and must be **revoked and rotated**; deleting the line doesn't make it s
 The scanner walks every `.py` file in the repository (skipping only virtual-environment and build
 directories) and searches, case-insensitively, for:
 
-| Rule | Patterns |
-|---|---|
-| `hardcoded-system-prompt` | `SYSTEM_PROMPT =`, `system_message =`, `"role": "system"` |
-| `injection-phrase` | "ignore previous instructions", "you are now", "pretend you are", "act as if you have no restrictions" |
+| Rule | List in `inject_scanner.py` | Patterns |
+|---|---|---|
+| `hardcoded-system-prompt` | `SYSTEM_PROMPT_PATTERNS` | `SYSTEM_PROMPT =`, `system_message =`, `"role": "system"` |
+| `injection-phrase` | `INJECTION_PHRASES` | "ignore previous instructions", "you are now", "pretend you are", "act as if you have no restrictions" |
 
 Each match is printed with file, line and matched text, and annotated in Actions. The script exits
 **1 if any match is found, 0 if clean**. The patterns are stored as regular expressions (`\s+` between

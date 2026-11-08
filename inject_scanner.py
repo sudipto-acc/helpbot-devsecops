@@ -5,7 +5,7 @@ Searches every .py file in the repository for hardcoded system prompt definition
 (SYSTEM_PROMPT / system_message assignments and "system" role messages) and for common
 prompt-injection bypass phrases. Exits 1 if any match is found, 0 if the code is clean.
 
-The rules are written as regular expressions (whitespace as \\s+ / \\s*) so this file never
+The patterns are written as regular expressions (whitespace as \\s+ / \\s*) so this file never
 contains a literal trigger string and is scanned like every other .py file.
 
 Usage: python inject_scanner.py [repo_root]
@@ -15,16 +15,25 @@ import re
 import sys
 from pathlib import Path
 
-RULES = [
-    ("hardcoded-system-prompt", r"SYSTEM_PROMPT\s*=(?!=)"),
-    ("hardcoded-system-prompt", r"system_message\s*=(?!=)"),
-    ("hardcoded-system-prompt", r"""["']role["']\s*:\s*["']system["']"""),
-    ("injection-phrase", r"ignore\s+previous\s+instructions"),
-    ("injection-phrase", r"you\s+are\s+now"),
-    ("injection-phrase", r"pretend\s+you\s+are"),
-    ("injection-phrase", r"act\s+as\s+if\s+you\s+have\s+no\s+restrictions"),
+# Hardcoded system prompt definitions (prompt variable assignments and system-role chat messages)
+SYSTEM_PROMPT_PATTERNS = [
+    r"SYSTEM_PROMPT\s*=(?!=)",
+    r"system_message\s*=(?!=)",
+    r"""["']role["']\s*:\s*["']system["']""",
 ]
-COMPILED = [(rule_id, re.compile(pattern, re.IGNORECASE)) for rule_id, pattern in RULES]
+
+# Common prompt-injection bypass phrases
+INJECTION_PHRASES = [
+    r"ignore\s+previous\s+instructions",
+    r"you\s+are\s+now",
+    r"pretend\s+you\s+are",
+    r"act\s+as\s+if\s+you\s+have\s+no\s+restrictions",
+]
+
+COMPILED = (
+    [("hardcoded-system-prompt", re.compile(p, re.IGNORECASE)) for p in SYSTEM_PROMPT_PATTERNS]
+    + [("injection-phrase", re.compile(p, re.IGNORECASE)) for p in INJECTION_PHRASES]
+)
 
 # Virtual environments and build output are not repository source code
 SKIP_DIRS = {".git", ".venv", "venv", "env", "site-packages", "node_modules", "__pycache__", "build", "dist"}
